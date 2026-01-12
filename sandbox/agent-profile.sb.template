@@ -1,0 +1,37 @@
+(version 1)
+(allow default)
+
+(deny file-write*)
+
+;; Allow file writing only in the sandbox directory
+(allow file-write*
+    (subpath "PLACEHOLDER_SANDBOX_DIR")
+)
+
+;; Allow basic IO
+(allow file-write*
+    (literal "/dev/null")
+    (literal "/dev/zero")
+    (literal "/dev/dtracehelper")
+    (literal "/dev/tty")
+    (literal "/dev/stdin")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+)
+
+;; Network restrictions
+(deny network*)
+
+;; Allow traffic to local proxy
+(allow network-outbound
+    (remote tcp "localhost:8080")
+    (remote tcp "127.0.0.1:8080")
+)
+
+;; DNS resolution
+(allow network-outbound
+    (literal "/private/var/run/mDNSResponder")
+)
+
+;; Allow unix sockets often needed for local IPC
+(allow network-outbound (literal "/private/var/run/syslog"))
