@@ -79,6 +79,10 @@ echo "Launching sandboxed shell in $WORKING_DIR..."
 
 cd "$WORKING_DIR"
 
+# explicit cleanup of API keys to ensure they are not leaked into the sandbox
+unset GEMINI_API_KEY
+unset GOOGLE_API_KEY
+
 # Execute
 # We use 'exec' to replace the current shell with sandbox-exec,
 # but we are in a trap, so we might want to run it as a child.
