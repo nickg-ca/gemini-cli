@@ -219,6 +219,7 @@ const mockUIActions: UIActions = {
   setAuthContext: vi.fn(),
   handleRestart: vi.fn(),
   handleNewAgentsSelect: vi.fn(),
+  handleElicitationResponse: vi.fn(),
 };
 
 export const renderWithProviders = (

@@ -32,6 +32,7 @@ import {
   PromptListChangedNotificationSchema,
   type Tool as McpTool,
 } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 import { ApprovalMode, PolicyDecision } from '../policy/types.js';
 import { parse } from 'shell-quote';
 import type { Config, MCPServerConfig } from '../config/config.js';
@@ -40,6 +41,7 @@ import { GoogleCredentialProvider } from '../mcp/google-auth-provider.js';
 import { ServiceAccountImpersonationProvider } from '../mcp/sa-impersonation-provider.js';
 import { DiscoveredMCPTool } from './mcp-tool.js';
 import { XcodeMcpBridgeFixTransport } from './xcode-mcp-fix-transport.js';
+import { ResilientStdioTransport } from './resilient-stdio-transport.js';
 
 import type { CallableTool, FunctionCall, Part, Tool } from '@google/genai';
 import { basename } from 'node:path';
@@ -61,6 +63,12 @@ import type {
 import type { ToolRegistry } from './tool-registry.js';
 import { debugLogger } from '../utils/debugLogger.js';
 import { type MessageBus } from '../confirmation-bus/message-bus.js';
+import {
+  MessageBusType,
+  type McpElicitationRequest,
+  type McpElicitationResponse,
+  type McpElicitationComplete,
+} from '../confirmation-bus/types.js';
 import { coreEvents } from '../utils/events.js';
 import type { ResourceRegistry } from '../resources/resource-registry.js';
 import {
@@ -78,6 +86,24 @@ export type DiscoveredMCPPrompt = Prompt & {
   serverName: string;
   invoke: (params: Record<string, unknown>) => Promise<GetPromptResult>;
 };
+
+const RelaxedElicitRequestSchema = z.object({
+  method: z.literal('elicitation/create'),
+  params: z.union([
+    z.object({
+      mode: z.literal('form'),
+      message: z.string(),
+      elicitationId: z.string().optional(),
+      requestedSchema: z.record(z.unknown()).or(z.any()).optional(),
+    }),
+    z.object({
+      mode: z.literal('url'),
+      message: z.string(),
+      elicitationId: z.string().optional(),
+      url: z.string().url(),
+    }),
+  ]),
+});
 
 /**
  * Enum representing the connection status of an MCP server
@@ -156,6 +182,28 @@ export class McpClient {
       );
 
       this.registerNotificationHandlers();
+
+      this.client.setRequestHandler(
+        RelaxedElicitRequestSchema,
+        async (request) => {
+          const messageBus = this.toolRegistry.getMessageBus();
+          const elicitationPayload = {
+            type: MessageBusType.MCP_ELICITATION_REQUEST as const,
+            serverName: this.serverName,
+            correlationId: '',
+            ...request.params,
+          };
+          const response = await messageBus.request<
+            McpElicitationRequest,
+            McpElicitationResponse
+          >(
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- SDK interop requires type assertion
+            elicitationPayload as McpElicitationRequest,
+            MessageBusType.MCP_ELICITATION_RESPONSE,
+          );
+          return { action: response.action, content: response.content };
+        },
+      );
 
       const originalOnError = this.client.onerror;
       this.client.onerror = (error) => {
@@ -346,6 +394,38 @@ export class McpClient {
             `🔔 Received prompt update notification from '${this.serverName}'`,
           );
           await this.refreshPrompts();
+        },
+      );
+    }
+
+    // Register elicitation complete handler if server supports elicitation
+    const capsRecord = capabilities as Record<string, unknown> | undefined;
+    if (capsRecord?.['elicitation']) {
+      const ElicitationCompleteNotificationSchema = z.object({
+        method: z.literal('notifications/elicitation/complete'),
+        params: z.object({
+          elicitations: z.array(
+            z.object({
+              elicitationId: z.string(),
+              action: z.enum(['accept', 'decline', 'cancel']),
+            }),
+          ),
+        }),
+      });
+      this.client.setNotificationHandler(
+        ElicitationCompleteNotificationSchema,
+        async (notification) => {
+          debugLogger.log(
+            `🔔 Received elicitation complete notification from '${this.serverName}'`,
+          );
+          const messageBus = this.toolRegistry.getMessageBus();
+          if (messageBus) {
+            void messageBus.publish({
+              type: MessageBusType.MCP_ELICITATION_COMPLETE,
+              serverName: this.serverName,
+              elicitations: notification.params.elicitations,
+            } satisfies McpElicitationComplete);
+          }
         },
       );
     }
@@ -1012,6 +1092,8 @@ export async function discoverTools(
           mcpClient,
           toolDef,
           mcpServerConfig.timeout ?? MCP_DEFAULT_TIMEOUT_MSEC,
+          mcpServerName,
+          messageBus,
         );
 
         // Extract readOnlyHint from annotations
@@ -1078,6 +1160,8 @@ class McpCallableTool implements CallableTool {
     private readonly client: Client,
     private readonly toolDef: McpTool,
     private readonly timeout: number,
+    private readonly serverName: string,
+    private readonly messageBus: MessageBus,
   ) {}
 
   async tool(): Promise<Tool> {
@@ -1099,41 +1183,149 @@ class McpCallableTool implements CallableTool {
     }
     const call = functionCalls[0];
 
-    try {
-      const result = await this.client.callTool(
-        {
-          name: call.name!,
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-          arguments: call.args as Record<string, unknown>,
-        },
-        undefined,
-        { timeout: this.timeout },
-      );
+    const maxRetries = 10;
+    let attempts = 0;
 
-      return [
-        {
-          functionResponse: {
-            name: call.name,
-            response: result,
+    while (attempts < maxRetries) {
+      attempts++;
+      try {
+        const result = await this.client.callTool(
+          {
+            name: call.name!,
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+            arguments: call.args as Record<string, unknown>,
           },
-        },
-      ];
-    } catch (error) {
-      // Return error in the format expected by DiscoveredMCPTool
-      return [
-        {
-          functionResponse: {
-            name: call.name,
-            response: {
-              error: {
-                message: error instanceof Error ? error.message : String(error),
-                isError: true,
+          undefined,
+          { timeout: this.timeout },
+        );
+
+        return [
+          {
+            functionResponse: {
+              name: call.name,
+              response: result,
+            },
+          },
+        ];
+      } catch (error: unknown) {
+        // Handle URLElicitationRequiredError (-32042)
+        // Extract elicitations from the error data and trigger the flow for each.
+        if (
+          error != null &&
+          typeof error === 'object' &&
+          'code' in error &&
+          error.code === -32042 &&
+          'data' in error &&
+          error.data != null &&
+          typeof error.data === 'object' &&
+          'elicitations' in error.data &&
+          Array.isArray(error.data.elicitations)
+        ) {
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- runtime-validated via Array.isArray above
+          const elicitations = error.data.elicitations as Array<
+            Record<string, unknown>
+          >;
+          let allAccepted = true;
+
+          for (const elicitation of elicitations) {
+            const elicitationPayload = {
+              type: MessageBusType.MCP_ELICITATION_REQUEST as const,
+              serverName: this.serverName,
+              correlationId: '',
+              ...elicitation,
+            };
+            const response = await this.messageBus.request<
+              McpElicitationRequest,
+              McpElicitationResponse
+            >(
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- SDK interop requires type assertion
+              elicitationPayload as McpElicitationRequest,
+              MessageBusType.MCP_ELICITATION_RESPONSE,
+            );
+
+            if (response.action !== 'accept') {
+              allAccepted = false;
+              break;
+            }
+
+            // If URL mode, wait for up to 10 minutes for notification, but continue on timeout
+            const mode = String(elicitation['mode'] ?? '');
+            const elicitationId = elicitation['elicitationId']
+              ? String(elicitation['elicitationId'])
+              : undefined;
+            if (mode === 'url' && elicitationId) {
+              await this.waitForElicitationComplete(
+                elicitationId,
+                10 * 60 * 1000,
+              );
+            }
+          }
+
+          if (allAccepted) {
+            // Elicitations complete/accepted - retry the tool call
+            continue;
+          }
+        }
+
+        // Return error in the format expected by DiscoveredMCPTool
+        return [
+          {
+            functionResponse: {
+              name: call.name,
+              response: {
+                error: {
+                  message: getErrorMessage(error),
+                  isError: true,
+                },
               },
             },
           },
-        },
-      ];
+        ];
+      }
     }
+
+    throw new Error(`Max retries exceeded for tool call ${call.name}`);
+  }
+
+  private async waitForElicitationComplete(
+    elicitationId: string,
+    timeoutMs: number,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
+        debugLogger.log(
+          `Timed out waiting for elicitation completion notification for ${elicitationId}`,
+        );
+        cleanup();
+        resolve();
+      }, timeoutMs);
+
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        this.messageBus.unsubscribe(
+          MessageBusType.MCP_ELICITATION_COMPLETE,
+          handler,
+        );
+      };
+
+      const handler = (message: McpElicitationComplete) => {
+        if (
+          message.serverName === this.serverName &&
+          message.elicitations?.some((e) => e.elicitationId === elicitationId)
+        ) {
+          debugLogger.log(
+            `Elicitation ${elicitationId} completed via notification`,
+          );
+          cleanup();
+          resolve();
+        }
+      };
+
+      this.messageBus.subscribe(
+        MessageBusType.MCP_ELICITATION_COMPLETE,
+        handler,
+      );
+    });
   }
 }
 
@@ -1460,6 +1652,10 @@ export async function connectToMcpServer(
   mcpClient.registerCapabilities({
     roots: {
       listChanged: true,
+    },
+    elicitation: {
+      form: {},
+      url: {},
     },
   });
 
@@ -1911,6 +2107,11 @@ export async function createTransport(
       stderr: 'pipe',
     });
 
+    // Wrap with ResilientStdioTransport to filter ZodErrors from the SDK's
+    // message deserialization before they reach Protocol.connect()'s error
+    // handler chain. See resilient-stdio-transport.ts for details.
+    transport = new ResilientStdioTransport(transport);
+
     // Fix for Xcode 26.3 mcpbridge non-compliant responses
     // It returns JSON in `content` instead of `structuredContent`
     if (
@@ -1921,14 +2122,16 @@ export async function createTransport(
     }
 
     if (debugMode) {
-      // The `XcodeMcpBridgeFixTransport` wrapper hides the underlying `StdioClientTransport`,
-      // which exposes `stderr` for debug logging. We need to unwrap it to attach the listener.
-
-      const underlyingTransport =
-        transport instanceof XcodeMcpBridgeFixTransport
-          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-type-assertion
-            (transport as any).transport
-          : transport;
+      // Transport wrappers hide the underlying `StdioClientTransport`,
+      // which exposes `stderr` for debug logging. Unwrap to find it.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-type-assertion
+      let underlyingTransport = transport as any;
+      while (
+        underlyingTransport &&
+        !(underlyingTransport instanceof StdioClientTransport)
+      ) {
+        underlyingTransport = underlyingTransport.transport;
+      }
 
       if (
         underlyingTransport instanceof StdioClientTransport &&

@@ -27,7 +27,8 @@ export class MessageBus extends EventEmitter {
     }
 
     if (
-      message.type === MessageBusType.TOOL_CONFIRMATION_REQUEST &&
+      (message.type === MessageBusType.TOOL_CONFIRMATION_REQUEST ||
+        message.type === MessageBusType.MCP_ELICITATION_REQUEST) &&
       !('correlationId' in message)
     ) {
       return false;

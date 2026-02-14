@@ -82,6 +82,11 @@ export interface UIActions {
   setAuthContext: (context: { requiresRestart?: boolean }) => void;
   handleRestart: () => void;
   handleNewAgentsSelect: (choice: NewAgentsChoice) => Promise<void>;
+  handleElicitationResponse: (
+    correlationId: string,
+    action: 'accept' | 'decline' | 'cancel',
+    content?: Record<string, unknown>,
+  ) => Promise<void>;
 }
 
 export const UIActionsContext = createContext<UIActions | null>(null);

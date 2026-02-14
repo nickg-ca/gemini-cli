@@ -27,6 +27,7 @@ import type {
   FallbackIntent,
   ValidationIntent,
   AgentDefinition,
+  McpElicitationRequest,
 } from '@google/gemini-cli-core';
 import { type TransientMessageType } from '../../utils/events.js';
 import type { DOMElement } from 'ink';
@@ -99,6 +100,7 @@ export interface UIState {
   loopDetectionConfirmationRequest: LoopDetectionConfirmationRequest | null;
   permissionConfirmationRequest: PermissionConfirmationRequest | null;
   geminiMdFileCount: number;
+  mcpElicitationRequest: McpElicitationRequest | null;
   streamingState: StreamingState;
   initError: string | null;
   pendingGeminiHistoryItems: HistoryItemWithoutId[];

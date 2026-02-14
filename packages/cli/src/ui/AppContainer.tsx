@@ -157,6 +157,7 @@ import { useTerminalTheme } from './hooks/useTerminalTheme.js';
 import { useTimedMessage } from './hooks/useTimedMessage.js';
 import { shouldDismissShortcutsHelpOnHotkey } from './utils/shortcutsHelp.js';
 import { useSuspend } from './hooks/useSuspend.js';
+import { useElicitation } from './hooks/useElicitation.js';
 
 function isToolExecuting(pendingHistoryItems: HistoryItemWithoutId[]) {
   return pendingHistoryItems.some((item) => {
@@ -248,6 +249,11 @@ export const AppContainer = (props: AppContainerProps) => {
   const [isTrustedFolder, setIsTrustedFolder] = useState<boolean | undefined>(
     () => isWorkspaceTrusted(settings.merged).isTrusted,
   );
+
+  const {
+    pendingRequests: elicitationRequests,
+    handleResponse: handleElicitationResponse,
+  } = useElicitation(config);
 
   const [queueErrorMessage, setQueueErrorMessage] = useState<string | null>(
     null,
@@ -1946,6 +1952,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
     !!validationRequest ||
     isSessionBrowserOpen ||
     authState === AuthState.AwaitingApiKeyInput ||
+    elicitationRequests.length > 0 ||
     !!newAgents;
 
   const pendingHistoryItems = useMemo(
@@ -2069,6 +2076,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
       loopDetectionConfirmationRequest,
       permissionConfirmationRequest,
       geminiMdFileCount,
+      mcpElicitationRequest: elicitationRequests[0] || null,
       streamingState,
       initError,
       pendingGeminiHistoryItems,
@@ -2183,6 +2191,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
       loopDetectionConfirmationRequest,
       permissionConfirmationRequest,
       geminiMdFileCount,
+      elicitationRequests,
       streamingState,
       initError,
       pendingGeminiHistoryItems,
@@ -2351,6 +2360,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
         }
         setNewAgents(null);
       },
+      handleElicitationResponse,
     }),
     [
       handleThemeSelect,
@@ -2400,6 +2410,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
       setAuthContext,
       newAgents,
       config,
+      handleElicitationResponse,
       historyManager,
     ],
   );

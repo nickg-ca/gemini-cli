@@ -19,6 +19,14 @@ export function getErrorMessage(error: unknown): string {
   if (friendlyError instanceof Error) {
     return friendlyError.message;
   }
+  if (
+    typeof friendlyError === 'object' &&
+    friendlyError !== null &&
+    'message' in friendlyError
+  ) {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion, @typescript-eslint/no-explicit-any
+    return String((friendlyError as any).message);
+  }
   try {
     return String(friendlyError);
   } catch {

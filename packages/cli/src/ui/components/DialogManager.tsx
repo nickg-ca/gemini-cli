@@ -35,6 +35,8 @@ import { IdeTrustChangeDialog } from './IdeTrustChangeDialog.js';
 import { NewAgentsNotification } from './NewAgentsNotification.js';
 import { AgentConfigDialog } from './AgentConfigDialog.js';
 import { SessionRetentionWarningDialog } from './SessionRetentionWarningDialog.js';
+import { ElicitationForm } from './ElicitationForm.js';
+import { ElicitationUrl } from './ElicitationUrl.js';
 import { useCallback } from 'react';
 import { SettingScope } from '../../config/settings.js';
 
@@ -122,6 +124,44 @@ export const DialogManager = ({
       />
     );
   }
+  if (uiState.mcpElicitationRequest) {
+    const request = uiState.mcpElicitationRequest;
+    if (request.mode === 'form') {
+      return (
+        <ElicitationForm
+          request={request}
+          onSubmit={(content) =>
+            uiActions.handleElicitationResponse(
+              request.correlationId,
+              'accept',
+              content,
+            )
+          }
+          onCancel={() =>
+            uiActions.handleElicitationResponse(request.correlationId, 'cancel')
+          }
+          terminalWidth={terminalWidth}
+        />
+      );
+    } else if (request.mode === 'url') {
+      return (
+        <ElicitationUrl
+          request={request}
+          onAccept={() =>
+            uiActions.handleElicitationResponse(request.correlationId, 'accept')
+          }
+          onDecline={() =>
+            uiActions.handleElicitationResponse(
+              request.correlationId,
+              'decline',
+            )
+          }
+          terminalWidth={terminalWidth}
+        />
+      );
+    }
+  }
+
   if (uiState.quota.proQuotaRequest) {
     return (
       <ProQuotaDialog

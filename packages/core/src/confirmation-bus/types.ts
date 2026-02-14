@@ -21,6 +21,9 @@ export enum MessageBusType {
   TOOL_CALLS_UPDATE = 'tool-calls-update',
   ASK_USER_REQUEST = 'ask-user-request',
   ASK_USER_RESPONSE = 'ask-user-response',
+  MCP_ELICITATION_REQUEST = 'mcp-elicitation-request',
+  MCP_ELICITATION_RESPONSE = 'mcp-elicitation-response',
+  MCP_ELICITATION_COMPLETE = 'mcp-elicitation-complete',
 }
 
 export interface ToolCallsUpdateMessage {
@@ -170,6 +173,56 @@ export interface AskUserResponse {
   /** When true, indicates the user cancelled the dialog without submitting answers */
   cancelled?: boolean;
 }
+/**
+ * MCP Elicitation request (mode: form)
+ */
+export interface McpElicitationFormRequest {
+  type: MessageBusType.MCP_ELICITATION_REQUEST;
+  correlationId: string;
+  serverName: string;
+  mode: 'form';
+  message: string;
+  requestedSchema: object; // JSON Schema
+}
+
+/**
+ * MCP Elicitation request (mode: url)
+ */
+export interface McpElicitationUrlRequest {
+  type: MessageBusType.MCP_ELICITATION_REQUEST;
+  correlationId: string;
+  serverName: string;
+  mode: 'url';
+  message: string;
+  url: string;
+  elicitationId: string;
+}
+
+export type McpElicitationRequest =
+  | McpElicitationFormRequest
+  | McpElicitationUrlRequest;
+
+/**
+ * MCP Elicitation response
+ */
+export interface McpElicitationResponse {
+  type: MessageBusType.MCP_ELICITATION_RESPONSE;
+  correlationId: string;
+  action: 'accept' | 'decline' | 'cancel';
+  content?: Record<string, unknown>;
+}
+
+/**
+ * MCP Elicitation complete notification
+ */
+export interface McpElicitationComplete {
+  type: MessageBusType.MCP_ELICITATION_COMPLETE;
+  serverName: string;
+  elicitations: Array<{
+    elicitationId: string;
+    action: 'accept' | 'decline' | 'cancel';
+  }>;
+}
 
 export type Message =
   | ToolConfirmationRequest
@@ -180,4 +233,7 @@ export type Message =
   | UpdatePolicy
   | AskUserRequest
   | AskUserResponse
+  | McpElicitationRequest
+  | McpElicitationResponse
+  | McpElicitationComplete
   | ToolCallsUpdateMessage;
